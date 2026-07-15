@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>留言板 — 消息签名工具</title>
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
+    .container { max-width: 600px; margin: 0 auto; }
+    h1 { font-size: 1.5em; margin-bottom: 8px; color: #58a6ff; }
+    .sub { font-size: 0.85em; color: #8b949e; margin-bottom: 20px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    .card h2 { font-size: 1.1em; margin-bottom: 12px; color: #f0f6fc; }
+    label { display: block; font-size: 0.85em; color: #8b949e; margin-bottom: 4px; }
+    input, textarea { width: 100%; padding: 8px 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-size: 0.9em; margin-bottom: 12px; }
+    textarea { min-height: 60px; resize: vertical; }
+    button { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; cursor: pointer; font-size: 0.9em; }
+    button:hover { background: #2ea043; }
+    button:disabled { background: #484f58; cursor: not-allowed; }
+    .output { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 0.8em; word-break: break-all; max-height: 300px; overflow-y: auto; }
+    .info { font-size: 0.8em; color: #8b949e; margin-top: 8px; }
+    .error { color: #f85149; }
+    .success { color: #3fb950; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>🔏 MessageBoard — 签名工具</h1>
+  <p class="sub">链下对留言内容签名 → 合约验证签名 → 记录留言</p>
+
+  <!-- Step 1: 连接钱包 -->
+  <div class="card">
+    <h2>1. 连接钱包</h2>
+    <button id="btnConnect" onclick="connectWallet()">连接 MetaMask / Rabby</button>
+    <div class="info" id="walletInfo">未连接</div>
+  </div>
+
+  <!-- Step 2: 签名消息 -->
+  <div class="card">
+    <h2>2. 签名留言</h2>
+    <label>合约地址</label>
+    <input id="contractAddress" placeholder="部署后填入合约地址" />
+    <label>Nonce（合约中查到的当前 nonce）</label>
+    <input id="nonce" type="number" value="0" />
+    <label>留言内容（≤ 280 字符）</label>
+    <textarea id="messageContent" maxlength="280" placeholder="写下你想说的话..."></textarea>
+    <button id="btnSign" onclick="signMessage()">对消息签名</button>
+    <div class="info" id="signInfo"></div>
+  </div>
+
+  <!-- Step 3: 签名结果 -->
+  <div class="card">
+    <h2>3. 签名结果</h2>
+    <p style="font-size:0.85em;color:#8b949e;margin-bottom:8px;">
+      将以下三项传给合约的 <code>postMessage(content, v, r, s)</code>
+    </p>
+    <div class="output" id="sigOutput">签名后此处显示 v, r, s</div>
+  </div>
+</div>
+
+<script>
+  let signer = null;
+  let walletAddress = null;
+
+  async function connectWallet() {
+    const infoEl = document.getElementById('walletInfo');
+    try {
+      if (typeof ethers === 'undefined') {
+        infoEl.innerHTML = '<span class="error">❌ ethers.js 未加载，请检查网络</span>';
+        return;
+      }
+      infoEl.innerHTML = '正在连接钱包...';
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      await provider.send("eth_requestAccounts", []);
+      signer = await provider.getSigner();
+      walletAddress = await signer.getAddress();
+      infoEl.innerHTML =
+        `<span class="success">✅ 已连接: ${walletAddress}</span>`;
+    } catch (e) {
+      infoEl.innerHTML =
+        `<span class="error">❌ 连接失败: ${e.message || e}</span>`;
+      console.error('connectWallet error:', e);
+    }
+  }
+
+  async function signMessage() {
+    const content = document.getElementById('messageContent').value.trim();
+    const nonce = document.getElementById('nonce').value;
+    if (!content) {
+      document.getElementById('signInfo').innerHTML =
+        '<span class="error">请输入留言内容</span>';
+      return;
+    }
+    if (!signer) {
+      document.getElementById('signInfo').innerHTML =
+        '<span class="error">⚠️ 请先点击上方「连接钱包」授权</span>';
+      return;
+    }
+
+    try {
+      // 1. 构造消息摘要: keccak256(abi.encodePacked(content, nonce))
+      const messageHash = ethers.keccak256(
+        ethers.AbiCoder.defaultAbiCoder().encode(
+          ['string', 'uint256'], [content, nonce]
+        )
+      );
+      // 或者更简单的: ethers.solidityPackedKeccak256(['string','uint256'], [content, nonce])
+      // 注意: ethers v6 中 solidityPackedKeccak256 在 ethers 顶级
+
+      // 使用 ethers v6 方式:
+      const hash = ethers.solidityPackedKeccak256(
+        ['string', 'uint256'], [content, nonce]
+      );
+
+      // 2. 用个人私钥签名（钱包弹出签名请求）
+      //    ethers 会自动添加 \x19Ethereum Signed Message:\n32 前缀
+      const sig = await signer.signMessage(ethers.getBytes(hash));
+
+      // 3. 拆分签名为 v, r, s
+      const sigObj = ethers.Signature.from(sig);
+
+      document.getElementById('sigOutput').innerHTML =
+        `v: ${sigObj.v}\n\nr: ${sigObj.r}\n\ns: ${sigObj.s}`;
+      document.getElementById('signInfo').innerHTML =
+        '<span class="success">✅ 签名完成，将以上 v, r, s 用于合约调用</span>';
+    } catch (e) {
+      document.getElementById('signInfo').innerHTML =
+        `<span class="error">❌ ${e.message}</span>`;
+    }
+  }
+
+  // 检查是否已有钱包插件
+  if (typeof window.ethereum !== 'undefined') {
+    document.getElementById('walletInfo').innerHTML =
+      '检测到钱包插件，点击上方按钮连接';
+  } else {
+    document.getElementById('walletInfo').innerHTML =
+      '<span class="error">未检测到钱包插件（MetaMask / Rabby）</span>';
+    document.getElementById('btnConnect').disabled = true;
+  }
+</script>
+</body>
+</html>
